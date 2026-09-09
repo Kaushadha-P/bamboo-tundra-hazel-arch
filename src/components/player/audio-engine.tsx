@@ -194,7 +194,7 @@ export function AudioEngine() {
   return (
     <>
       <audio ref={audioRef} preload="auto" playsInline onLoadedMetadata={onMetadata} onDurationChange={onMetadata} onTimeUpdate={onTime} onEnded={onEnded} onError={() => void onError()} onPlay={() => { if (backgroundPlay && !youtubeActive.current) setPlaying(true); if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "playing"; }} onPause={() => { if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "paused"; }} />
-      {youtubeVisible && <div ref={youtubeRef} aria-label="YouTube playback" className="fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" />}
+      <div ref={youtubeRef} aria-label="YouTube playback" className={youtubeVisible ? "fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" : "hidden"} />
     </>
   );
 }
