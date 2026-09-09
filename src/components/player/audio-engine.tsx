@@ -2,17 +2,19 @@ import { useEffect, useRef } from "react";
 import { getTrack } from "@/lib/music/api";
 import { useLibrary } from "@/lib/music/library-store";
 import { usePlayer } from "@/lib/music/player-store";
-import { isSpotifyConnected, playSpotifyUri, searchSpotifyTrack, spotifySeek, spotifySetPaused, spotifySetVolume } from "@/lib/music/spotify";
+import { isYouTubeConfigured, playYouTubeVideo, youtubeGetDuration, youtubeGetTime, youtubeIsActive, youtubePause, youtubePlay, youtubeSeek, youtubeSetVolume } from "@/lib/music/youtube";
 
 function getPlaybackUrl(track: { playbackUrl?: string; previewUrl: string }): string { return track.playbackUrl || track.previewUrl; }
 
 export function AudioEngine() {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const youtubeRef = useRef<HTMLDivElement>(null);
   const lastId = useRef<string | null>(null);
   const seekLock = useRef(false);
   const wasPlayingBeforeHidden = useRef(false);
-  const spotifyActive = useRef(false);
-  const spotifyStateSync = useRef(false);
+  const youtubeActive = useRef(false);
+  const youtubeStateSync = useRef(false);
+  const youtubeVideoId = useRef<string | null>(null);
 
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
@@ -34,59 +36,75 @@ export function AudioEngine() {
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !track) return;
+    const ytHost = youtubeRef.current;
+    if (!track || !audio || !ytHost) return;
     const load = async () => {
-      if (lastId.current === track.id && (audio.src || spotifyActive.current)) return;
+      if (lastId.current === track.id && (audio.src || youtubeActive.current)) return;
       lastId.current = track.id;
-      spotifyActive.current = false;
+      youtubeActive.current = false;
+      youtubeVideoId.current = null;
+      audio.pause();
       if (!incognito) addRecent(track);
-      if (isSpotifyConnected()) {
+
+      if (isYouTubeConfigured()) {
         try {
-          const match = await searchSpotifyTrack(track.title, track.artist);
-          if (match) {
-            spotifyActive.current = true;
-            await playSpotifyUri(match.uri, (state) => {
-              if (!state) return;
-              spotifyStateSync.current = true;
-              const duration = Number(state.duration ?? 0) / 1000;
-              const position = Number(state.position ?? 0) / 1000;
-              if (duration > 0) setProgress(position, duration);
-              setPlaying(!state.paused);
-              window.setTimeout(() => { spotifyStateSync.current = false; }, 0);
-            });
-            return;
+          const query = `${track.title} ${track.artist}`.slice(0, 180);
+          const response = await fetch(`/api/youtube-search?q=${encodeURIComponent(query)}`).catch(() => null);
+          if (response?.ok) {
+            const body = await response.json() as { videoId?: string };
+            if (body.videoId) {
+              youtubeActive.current = true;
+              youtubeVideoId.current = body.videoId;
+              await playYouTubeVideo(ytHost, body.videoId, (state) => {
+                const YT = window.YT;
+                if (!YT) return;
+                youtubeStateSync.current = true;
+                if (state === YT.PlayerState.PLAYING) setPlaying(true);
+                if (state === YT.PlayerState.PAUSED) setPlaying(false);
+                if (state === YT.PlayerState.ENDED) next();
+                window.setTimeout(() => { youtubeStateSync.current = false; }, 0);
+              });
+              if (playing) youtubePlay();
+              return;
+            }
           }
         } catch {
-          spotifyActive.current = false;
+          youtubeActive.current = false;
         }
       }
+
       audio.src = getPlaybackUrl(track);
       audio.load();
       if (playing) { try { await audio.play(); } catch { setPlaying(false); } }
     };
     void load();
-  }, [track, addRecent, incognito, playing, setPlaying, setProgress]);
+  }, [track, addRecent, incognito, playing, setPlaying, next]);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    if (spotifyActive.current) {
-      if (!spotifyStateSync.current) void spotifySetPaused(!playing).catch(() => setPlaying(false));
+    if (!track) return;
+    if (youtubeActive.current) {
+      if (!youtubeStateSync.current) {
+        if (playing) youtubePlay(); else youtubePause();
+      }
       return;
     }
-    if (!track) { audio.pause(); return; }
+    const audio = audioRef.current;
+    if (!audio) return;
     if (playing) void audio.play().catch(() => setPlaying(false)); else audio.pause();
   }, [playing, track, setPlaying]);
 
   useEffect(() => {
+    if (youtubeActive.current) {
+      youtubeSetVolume(muted ? 0 : volume);
+      return;
+    }
     const audio = audioRef.current;
-    if (spotifyActive.current) { void spotifySetVolume(muted ? 0 : volume).catch(() => undefined); return; }
     if (audio) audio.volume = muted ? 0 : volume;
   }, [volume, muted]);
 
   useEffect(() => {
-    if (spotifyActive.current) {
-      if (!spotifyStateSync.current) void spotifySeek(progress * 1000).catch(() => undefined);
+    if (youtubeActive.current) {
+      if (!youtubeStateSync.current) youtubeSeek(progress);
       return;
     }
     const audio = audioRef.current;
@@ -97,9 +115,24 @@ export function AudioEngine() {
   }, [progress]);
 
   useEffect(() => {
+    const id = window.setInterval(() => {
+      if (!youtubeActive.current || !youtubeIsActive() || youtubeStateSync.current) return;
+      const duration = youtubeGetDuration();
+      const position = youtubeGetTime();
+      if (duration > 0 && Number.isFinite(position)) {
+        youtubeStateSync.current = true;
+        setProgress(position, duration);
+        window.setTimeout(() => { youtubeStateSync.current = false; }, 0);
+      }
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [setProgress]);
+
+  useEffect(() => {
     const onVisibilityChange = () => {
       const audio = audioRef.current;
-      if (!audio || spotifyActive.current) return;
+      if (youtubeActive.current) return;
+      if (!audio) return;
       if (document.visibilityState === "hidden") {
         wasPlayingBeforeHidden.current = !audio.paused;
         if (!backgroundPlay) { audio.pause(); setPlaying(false); }
@@ -121,10 +154,9 @@ export function AudioEngine() {
     if (!track || typeof navigator === "undefined" || !navigator.mediaSession) return;
     navigator.mediaSession.metadata = new MediaMetadata({ title: track.title, artist: track.artist, album: track.album, artwork: [{ src: track.cover, sizes: "250x250", type: "image/jpeg" }, { src: track.coverLg || track.cover, sizes: "512x512", type: "image/jpeg" }].filter((item) => Boolean(item.src)) });
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
-    const audio = audioRef.current;
     const updatePositionState = () => {
-      const duration = spotifyActive.current ? usePlayer.getState().duration : (audio?.duration ?? usePlayer.getState().duration);
-      const position = spotifyActive.current ? usePlayer.getState().progress : (audio?.currentTime ?? progress);
+      const duration = youtubeActive.current ? usePlayer.getState().duration : (audioRef.current?.duration ?? usePlayer.getState().duration);
+      const position = youtubeActive.current ? usePlayer.getState().progress : (audioRef.current?.currentTime ?? progress);
       if (Number.isFinite(duration) && duration > 0 && Number.isFinite(position) && position >= 0 && position <= duration) { try { navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position }); } catch { /* unsupported */ } }
     };
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
@@ -152,22 +184,28 @@ export function AudioEngine() {
   }, [toggle, next, prev, seek]);
 
   const syncMediaPosition = () => {
-    const audio = audioRef.current; if (!audio || typeof navigator === "undefined" || !navigator.mediaSession) return;
-    const duration = spotifyActive.current ? usePlayer.getState().duration : audio.duration; const position = spotifyActive.current ? usePlayer.getState().progress : audio.currentTime;
-    if (Number.isFinite(duration) && duration > 0 && Number.isFinite(position)) { try { navigator.mediaSession.setPositionState({ duration, playbackRate: audio.playbackRate || 1, position: Math.min(Math.max(0, position), duration) }); } catch { /* unsupported */ } }
+    if (typeof navigator === "undefined" || !navigator.mediaSession) return;
+    const duration = youtubeActive.current ? usePlayer.getState().duration : audioRef.current?.duration;
+    const position = youtubeActive.current ? usePlayer.getState().progress : audioRef.current?.currentTime;
+    if (Number.isFinite(duration) && duration! > 0 && Number.isFinite(position)) { try { navigator.mediaSession.setPositionState({ duration: duration!, playbackRate: 1, position: Math.min(Math.max(0, position!), duration!) }); } catch { /* unsupported */ } }
   };
 
-  const onTime = () => { const audio = audioRef.current; if (!audio || spotifyActive.current) return; seekLock.current = true; setProgress(audio.currentTime, Number.isFinite(audio.duration) ? audio.duration : 30); syncMediaPosition(); window.setTimeout(() => { seekLock.current = false; }, 50); };
-  const onMetadata = () => { const audio = audioRef.current; if (!audio || spotifyActive.current) return; if (Number.isFinite(audio.duration) && audio.duration > 0) { setProgress(audio.currentTime, audio.duration); syncMediaPosition(); } };
+  const onTime = () => { const audio = audioRef.current; if (!audio || youtubeActive.current) return; seekLock.current = true; setProgress(audio.currentTime, Number.isFinite(audio.duration) ? audio.duration : 30); syncMediaPosition(); window.setTimeout(() => { seekLock.current = false; }, 50); };
+  const onMetadata = () => { const audio = audioRef.current; if (!audio || youtubeActive.current) return; if (Number.isFinite(audio.duration) && audio.duration > 0) { setProgress(audio.currentTime, audio.duration); syncMediaPosition(); } };
   const onEnded = () => next();
   const onError = async () => {
     if (!track) return;
     try {
-      const fresh = await getTrack({ data: { id: track.id } }); const audio = audioRef.current;
-      if (fresh) { const freshUrl = getPlaybackUrl(fresh); if (audio && freshUrl && audio.src !== freshUrl) { audio.src = freshUrl; lastId.current = track.id; if (playing) void audio.play(); return; } }
+      const fresh = await getTrack({ data: { id: track.id } }); const current = audioRef.current;
+      if (fresh) { const freshUrl = getPlaybackUrl(fresh); if (current && freshUrl && current.src !== freshUrl) { current.src = freshUrl; lastId.current = track.id; if (playing) void current.play(); return; } }
     } catch { /* fall through */ }
     next();
   };
 
-  return <audio ref={audioRef} preload="auto" playsInline onLoadedMetadata={onMetadata} onDurationChange={onMetadata} onTimeUpdate={onTime} onEnded={onEnded} onError={() => void onError()} onPlay={() => { if (backgroundPlay && !spotifyActive.current) setPlaying(true); if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "playing"; }} onPause={() => { if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "paused"; }} />;
+  return (
+    <>
+      <audio ref={audioRef} preload="auto" playsInline onLoadedMetadata={onMetadata} onDurationChange={onMetadata} onTimeUpdate={onTime} onEnded={onEnded} onError={() => void onError()} onPlay={() => { if (backgroundPlay && !youtubeActive.current) setPlaying(true); if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "playing"; }} onPause={() => { if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "paused"; }} />
+      <div ref={youtubeRef} aria-label="YouTube playback" className="fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" hidden={!youtubeVideoId.current} />
+    </>
+  );
 }
