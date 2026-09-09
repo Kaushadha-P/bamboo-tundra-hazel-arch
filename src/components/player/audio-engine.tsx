@@ -3,6 +3,12 @@ import { getTrack } from "@/lib/music/api";
 import { useLibrary } from "@/lib/music/library-store";
 import { usePlayer } from "@/lib/music/player-store";
 
+function getPlaybackUrl(track: { playbackUrl?: string; previewUrl: string }): string {
+  // Full-track URLs are accepted only when supplied by an authorized provider.
+  // Catalog preview URLs remain the safe fallback.
+  return track.playbackUrl || track.previewUrl;
+}
+
 export function AudioEngine() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastId = useRef<string | null>(null);
@@ -35,7 +41,7 @@ export function AudioEngine() {
     const load = async () => {
       if (lastId.current === track.id && audio.src) return;
       lastId.current = track.id;
-      audio.src = track.previewUrl;
+      audio.src = getPlaybackUrl(track);
       audio.load();
       if (!incognito) addRecent(track);
       if (playing) {
@@ -81,9 +87,6 @@ export function AudioEngine() {
     }
   }, [progress]);
 
-  // Respect the user's background-play setting. When enabled, the native audio
-  // element continues playing while the page is hidden; supported browsers can
-  // keep Media Session controls active on the lock screen/headset controls.
   useEffect(() => {
     const onVisibilityChange = () => {
       const audio = audioRef.current;
@@ -117,8 +120,6 @@ export function AudioEngine() {
     return () => window.clearTimeout(id);
   }, [sleepUntil, setPlaying]);
 
-  // Keep the browser/OS media session in sync so supported mobile browsers can
-  // expose lock-screen, headset and notification controls for the active track.
   useEffect(() => {
     if (!track || typeof navigator === "undefined" || !navigator.mediaSession) return;
 
@@ -137,19 +138,9 @@ export function AudioEngine() {
     const updatePositionState = () => {
       const duration = audio?.duration ?? 0;
       const position = audio?.currentTime ?? progress;
-      if (
-        Number.isFinite(duration) &&
-        duration > 0 &&
-        Number.isFinite(position) &&
-        position >= 0 &&
-        position <= duration
-      ) {
+      if (Number.isFinite(duration) && duration > 0 && Number.isFinite(position) && position >= 0 && position <= duration) {
         try {
-          navigator.mediaSession.setPositionState({
-            duration,
-            playbackRate: audio?.playbackRate || 1,
-            position,
-          });
+          navigator.mediaSession.setPositionState({ duration, playbackRate: audio?.playbackRate || 1, position });
         } catch {
           /* unsupported by this browser */
         }
@@ -164,27 +155,17 @@ export function AudioEngine() {
       ["stop", () => setPlaying(false)],
       ["seekbackward", (details) => seek(Math.max(0, progress - (details.seekOffset || 10)))],
       ["seekforward", (details) => seek(progress + (details.seekOffset || 10))],
-      ["seekto", (details) => {
-        if (details.seekTime != null) seek(details.seekTime);
-      }],
+      ["seekto", (details) => { if (details.seekTime != null) seek(details.seekTime); }],
     ];
 
     for (const [action, fn] of handlers) {
-      try {
-        navigator.mediaSession.setActionHandler(action, fn);
-      } catch {
-        /* unsupported */
-      }
+      try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* unsupported */ }
     }
 
     updatePositionState();
     return () => {
       for (const [action] of handlers) {
-        try {
-          navigator.mediaSession.setActionHandler(action, null);
-        } catch {
-          /* ignore */
-        }
+        try { navigator.mediaSession.setActionHandler(action, null); } catch { /* ignore */ }
       }
     };
   }, [track, playing, progress, next, prev, setPlaying, seek]);
@@ -197,31 +178,17 @@ export function AudioEngine() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
-
-      if (e.code === "Space") {
-        e.preventDefault();
-        toggle();
-      } else if (e.code === "ArrowRight") {
-        seek(usePlayer.getState().progress + 5);
-      } else if (e.code === "ArrowLeft") {
-        seek(Math.max(0, usePlayer.getState().progress - 5));
-      } else if (e.key === "n" || e.key === "N") {
-        next();
-      } else if (e.key === "p" || e.key === "P") {
-        prev();
-      } else if (e.key === "m" || e.key === "M") {
-        usePlayer.getState().toggleMute();
-      } else if (e.key === "s" || e.key === "S") {
-        usePlayer.getState().toggleShuffle();
-      } else if (e.key === "r" || e.key === "R") {
-        usePlayer.getState().cycleRepeat();
-      } else if (e.key === "f" || e.key === "F") {
-        usePlayer.getState().setFullOpen(!usePlayer.getState().fullOpen);
-      } else if (e.key === "]") {
-        usePlayer.getState().setVolume(Math.min(1, usePlayer.getState().volume + 0.05));
-      } else if (e.key === "[") {
-        usePlayer.getState().setVolume(Math.max(0, usePlayer.getState().volume - 0.05));
-      }
+      if (e.code === "Space") { e.preventDefault(); toggle(); }
+      else if (e.code === "ArrowRight") seek(usePlayer.getState().progress + 5);
+      else if (e.code === "ArrowLeft") seek(Math.max(0, usePlayer.getState().progress - 5));
+      else if (e.key === "n" || e.key === "N") next();
+      else if (e.key === "p" || e.key === "P") prev();
+      else if (e.key === "m" || e.key === "M") usePlayer.getState().toggleMute();
+      else if (e.key === "s" || e.key === "S") usePlayer.getState().toggleShuffle();
+      else if (e.key === "r" || e.key === "R") usePlayer.getState().cycleRepeat();
+      else if (e.key === "f" || e.key === "F") usePlayer.getState().setFullOpen(!usePlayer.getState().fullOpen);
+      else if (e.key === "]") usePlayer.getState().setVolume(Math.min(1, usePlayer.getState().volume + 0.05));
+      else if (e.key === "[") usePlayer.getState().setVolume(Math.max(0, usePlayer.getState().volume - 0.05));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -232,22 +199,10 @@ export function AudioEngine() {
     if (!audio) return;
     const duration = audio.duration;
     const position = audio.currentTime;
-    if (
-      typeof navigator !== "undefined" &&
-      navigator.mediaSession &&
-      Number.isFinite(duration) &&
-      duration > 0 &&
-      Number.isFinite(position)
-    ) {
+    if (typeof navigator !== "undefined" && navigator.mediaSession && Number.isFinite(duration) && duration > 0 && Number.isFinite(position)) {
       try {
-        navigator.mediaSession.setPositionState({
-          duration,
-          playbackRate: audio.playbackRate || 1,
-          position: Math.min(Math.max(0, position), duration),
-        });
-      } catch {
-        /* unsupported */
-      }
+        navigator.mediaSession.setPositionState({ duration, playbackRate: audio.playbackRate || 1, position: Math.min(Math.max(0, position), duration) });
+      } catch { /* unsupported */ }
     }
   };
 
@@ -257,9 +212,7 @@ export function AudioEngine() {
     seekLock.current = true;
     setProgress(audio.currentTime, Number.isFinite(audio.duration) ? audio.duration : 30);
     syncMediaPosition();
-    window.setTimeout(() => {
-      seekLock.current = false;
-    }, 50);
+    window.setTimeout(() => { seekLock.current = false; }, 50);
   };
 
   const onMetadata = () => {
@@ -271,20 +224,21 @@ export function AudioEngine() {
     }
   };
 
-  const onEnded = () => {
-    next();
-  };
+  const onEnded = () => next();
 
   const onError = async () => {
     if (!track) return;
     try {
       const fresh = await getTrack({ data: { id: track.id } });
       const audio = audioRef.current;
-      if (fresh?.previewUrl && audio && audio.src !== fresh.previewUrl) {
-        audio.src = fresh.previewUrl;
-        lastId.current = track.id;
-        if (playing) void audio.play();
-        return;
+      if (fresh) {
+        const freshUrl = getPlaybackUrl(fresh);
+        if (audio && freshUrl && audio.src !== freshUrl) {
+          audio.src = freshUrl;
+          lastId.current = track.id;
+          if (playing) void audio.play();
+          return;
+        }
       }
     } catch {
       /* fall through */
@@ -304,14 +258,10 @@ export function AudioEngine() {
       onError={() => void onError()}
       onPlay={() => {
         if (backgroundPlay) setPlaying(true);
-        if (typeof navigator !== "undefined" && navigator.mediaSession) {
-          navigator.mediaSession.playbackState = "playing";
-        }
+        if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "playing";
       }}
       onPause={() => {
-        if (typeof navigator !== "undefined" && navigator.mediaSession) {
-          navigator.mediaSession.playbackState = "paused";
-        }
+        if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "paused";
       }}
     />
   );
