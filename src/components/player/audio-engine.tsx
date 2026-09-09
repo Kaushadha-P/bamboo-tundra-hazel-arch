@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getTrack } from "@/lib/music/api";
 import { useLibrary } from "@/lib/music/library-store";
 import { usePlayer } from "@/lib/music/player-store";
-import { isYouTubeConfigured, playYouTubeVideo, youtubeGetDuration, youtubeGetTime, youtubeIsActive, youtubePause, youtubePlay, youtubeSeek, youtubeSetVolume } from "@/lib/music/youtube";
+import { isYouTubeConfigured, playYouTubeVideo, searchYouTubeTrack, youtubeGetDuration, youtubeGetTime, youtubeIsActive, youtubePause, youtubePlay, youtubeSeek, youtubeSetVolume } from "@/lib/music/youtube";
 
 function getPlaybackUrl(track: { playbackUrl?: string; previewUrl: string }): string { return track.playbackUrl || track.previewUrl; }
 
@@ -14,7 +14,7 @@ export function AudioEngine() {
   const wasPlayingBeforeHidden = useRef(false);
   const youtubeActive = useRef(false);
   const youtubeStateSync = useRef(false);
-  const youtubeVideoId = useRef<string | null>(null);
+  const [youtubeVisible, setYoutubeVisible] = useState(false);
 
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
@@ -42,34 +42,32 @@ export function AudioEngine() {
       if (lastId.current === track.id && (audio.src || youtubeActive.current)) return;
       lastId.current = track.id;
       youtubeActive.current = false;
-      youtubeVideoId.current = null;
       audio.pause();
+      setYoutubeVisible(false);
       if (!incognito) addRecent(track);
 
       if (isYouTubeConfigured()) {
         try {
-          const query = `${track.title} ${track.artist}`.slice(0, 180);
-          const response = await fetch(`/api/youtube-search?q=${encodeURIComponent(query)}`).catch(() => null);
-          if (response?.ok) {
-            const body = await response.json() as { videoId?: string };
-            if (body.videoId) {
-              youtubeActive.current = true;
-              youtubeVideoId.current = body.videoId;
-              await playYouTubeVideo(ytHost, body.videoId, (state) => {
-                const YT = window.YT;
-                if (!YT) return;
-                youtubeStateSync.current = true;
-                if (state === YT.PlayerState.PLAYING) setPlaying(true);
-                if (state === YT.PlayerState.PAUSED) setPlaying(false);
-                if (state === YT.PlayerState.ENDED) next();
-                window.setTimeout(() => { youtubeStateSync.current = false; }, 0);
-              });
-              if (playing) youtubePlay();
-              return;
-            }
+          const match = await searchYouTubeTrack(track.title, track.artist);
+          if (match) {
+            youtubeActive.current = true;
+            setYoutubeVisible(true);
+            await playYouTubeVideo(ytHost, match.videoId, (state) => {
+              const YT = window.YT;
+              if (!YT) return;
+              youtubeStateSync.current = true;
+              if (state === YT.PlayerState.PLAYING) setPlaying(true);
+              if (state === YT.PlayerState.PAUSED) setPlaying(false);
+              if (state === YT.PlayerState.ENDED) next();
+              window.setTimeout(() => { youtubeStateSync.current = false; }, 0);
+            });
+            youtubeSetVolume(muted ? 0 : volume);
+            if (playing) youtubePlay();
+            return;
           }
         } catch {
           youtubeActive.current = false;
+          setYoutubeVisible(false);
         }
       }
 
@@ -78,14 +76,12 @@ export function AudioEngine() {
       if (playing) { try { await audio.play(); } catch { setPlaying(false); } }
     };
     void load();
-  }, [track, addRecent, incognito, playing, setPlaying, next]);
+  }, [track, addRecent, incognito, playing, setPlaying, next, muted, volume]);
 
   useEffect(() => {
     if (!track) return;
     if (youtubeActive.current) {
-      if (!youtubeStateSync.current) {
-        if (playing) youtubePlay(); else youtubePause();
-      }
+      if (!youtubeStateSync.current) { if (playing) youtubePlay(); else youtubePause(); }
       return;
     }
     const audio = audioRef.current;
@@ -94,19 +90,13 @@ export function AudioEngine() {
   }, [playing, track, setPlaying]);
 
   useEffect(() => {
-    if (youtubeActive.current) {
-      youtubeSetVolume(muted ? 0 : volume);
-      return;
-    }
+    if (youtubeActive.current) { youtubeSetVolume(muted ? 0 : volume); return; }
     const audio = audioRef.current;
     if (audio) audio.volume = muted ? 0 : volume;
   }, [volume, muted]);
 
   useEffect(() => {
-    if (youtubeActive.current) {
-      if (!youtubeStateSync.current) youtubeSeek(progress);
-      return;
-    }
+    if (youtubeActive.current) { if (!youtubeStateSync.current) youtubeSeek(progress); return; }
     const audio = audioRef.current;
     if (!audio || seekLock.current) return;
     if (Math.abs(audio.currentTime - progress) > 1.2) {
@@ -131,8 +121,7 @@ export function AudioEngine() {
   useEffect(() => {
     const onVisibilityChange = () => {
       const audio = audioRef.current;
-      if (youtubeActive.current) return;
-      if (!audio) return;
+      if (youtubeActive.current || !audio) return;
       if (document.visibilityState === "hidden") {
         wasPlayingBeforeHidden.current = !audio.paused;
         if (!backgroundPlay) { audio.pause(); setPlaying(false); }
@@ -205,7 +194,7 @@ export function AudioEngine() {
   return (
     <>
       <audio ref={audioRef} preload="auto" playsInline onLoadedMetadata={onMetadata} onDurationChange={onMetadata} onTimeUpdate={onTime} onEnded={onEnded} onError={() => void onError()} onPlay={() => { if (backgroundPlay && !youtubeActive.current) setPlaying(true); if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "playing"; }} onPause={() => { if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "paused"; }} />
-      <div ref={youtubeRef} aria-label="YouTube playback" className="fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" hidden={!youtubeVideoId.current} />
+      {youtubeVisible && <div ref={youtubeRef} aria-label="YouTube playback" className="fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" />}
     </>
   );
 }
