@@ -1,19 +1,12 @@
+import { useEffect, useState, type ReactNode } from "react";
+import { Download, Headphones, Mic2, Moon, ShieldOff, SkipForward, Timer } from "lucide-react";
 import { createFileRoute } from "@tanstack/react-router";
-import {
-  Download,
-  Headphones,
-  Mic2,
-  Moon,
-  ShieldOff,
-  SkipForward,
-  Timer,
-} from "lucide-react";
-import type { ReactNode } from "react";
 import { Page, PageHeader } from "@/components/music/page";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { usePlayer } from "@/lib/music/player-store";
 import { formatTime } from "@/lib/utils";
+import { connectSpotify, disconnectSpotify, finishSpotifyCallback, isSpotifyConfigured, isSpotifyConnected } from "@/lib/music/spotify";
 
 export const Route = createFileRoute("/premium")({ component: PremiumPage });
 
@@ -28,151 +21,86 @@ function PremiumPage() {
   const setCrossfade = usePlayer((s) => s.setCrossfade);
   const setIncognito = usePlayer((s) => s.setIncognito);
   const setSleep = usePlayer((s) => s.setSleep);
+  const [spotifyConnected, setSpotifyConnected] = useState(false);
+  const [spotifyError, setSpotifyError] = useState<string | null>(null);
 
-  const remaining =
-    sleepUntil && sleepUntil > Date.now()
-      ? formatTime((sleepUntil - Date.now()) / 1000)
-      : null;
+  useEffect(() => {
+    let active = true;
+    void finishSpotifyCallback()
+      .catch((error) => {
+        if (active) setSpotifyError(error instanceof Error ? error.message : "Spotify authorization failed.");
+      })
+      .finally(() => {
+        if (active) setSpotifyConnected(isSpotifyConnected());
+      });
+    return () => { active = false; };
+  }, []);
+
+  const remaining = sleepUntil && sleepUntil > Date.now() ? formatTime((sleepUntil - Date.now()) / 1000) : null;
+
+  const handleSpotify = async () => {
+    setSpotifyError(null);
+    try {
+      if (spotifyConnected) {
+        disconnectSpotify();
+        setSpotifyConnected(false);
+      } else {
+        await connectSpotify();
+      }
+    } catch (error) {
+      setSpotifyError(error instanceof Error ? error.message : "Could not connect Spotify.");
+    }
+  };
 
   return (
     <Page>
-      <PageHeader
-        kicker="Included"
-        title="Premium"
-        subtitle="Background play, downloads, lyrics, unlimited skips, sleep timer, and no ads — on by default."
-      />
+      <PageHeader kicker="Included" title="Premium" subtitle="Background play, downloads, lyrics, unlimited skips, sleep timer, and no ads — on by default." />
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Perk
-          icon={<Headphones className="size-5" />}
-          title="Background play"
-          body="Audio keeps going when you switch tabs or lock the screen. Lock-screen controls use Media Session."
-        />
-        <Perk
-          icon={<ShieldOff className="size-5" />}
-          title="Ad-free listening"
-          body="No interruptions between tracks. Mixes, radio, and search play straight through."
-        />
-        <Perk
-          icon={<Download className="size-5" />}
-          title="Downloads"
-          body="Save tracks from any menu into your Library → Downloads for offline-ready recents."
-        />
-        <Perk
-          icon={<SkipForward className="size-5" />}
-          title="Unlimited skips"
-          body="Skip, replay, shuffle, and repeat without a cap."
-        />
-        <Perk
-          icon={<Mic2 className="size-5" />}
-          title="Synced lyrics"
-          body="Open the full player and switch to Lyrics for timed lines when they're available."
-        />
-        <Perk
-          icon={<Moon className="size-5" />}
-          title="Sleep timer"
-          body="From the now-playing screen, fade out after 5–60 minutes."
-        />
+        <Perk icon={<Headphones className="size-5" />} title="Background play" body="Audio keeps going when you switch tabs or lock the screen. Lock-screen controls use Media Session." />
+        <Perk icon={<ShieldOff className="size-5" />} title="Ad-free listening" body="No interruptions between tracks. Mixes, radio, and search play straight through." />
+        <Perk icon={<Download className="size-5" />} title="Downloads" body="Save tracks from any menu into your Library → Downloads for offline-ready recents." />
+        <Perk icon={<SkipForward className="size-5" />} title="Unlimited skips" body="Skip, replay, shuffle, and repeat without a cap." />
+        <Perk icon={<Mic2 className="size-5" />} title="Synced lyrics" body="Open the full player and switch to Lyrics for timed lines when they're available." />
+        <Perk icon={<Moon className="size-5" />} title="Sleep timer" body="From the now-playing screen, fade out after 5–60 minutes." />
       </div>
 
       <section className="space-y-1 rounded-lg bg-surface p-2">
-        <Row
-          title="Background play"
-          hint="Keep audio alive when Pulse isn't in the foreground"
-          checked={backgroundPlay}
-          onCheckedChange={setBackgroundPlay}
-        />
-        <Row
-          title="High quality"
-          hint="Prefer the best available preview stream"
-          checked={highQuality}
-          onCheckedChange={setHighQuality}
-        />
-        <Row
-          title="Incognito"
-          hint="Don't save what you play to Listen again"
-          checked={incognito}
-          onCheckedChange={setIncognito}
-        />
+        <Row title="Background play" hint="Keep audio alive when Pulse isn't in the foreground" checked={backgroundPlay} onCheckedChange={setBackgroundPlay} />
+        <Row title="High quality" hint="Prefer the best available preview stream" checked={highQuality} onCheckedChange={setHighQuality} />
+        <Row title="Incognito" hint="Don't save what you play to Listen again" checked={incognito} onCheckedChange={setIncognito} />
         <div className="flex flex-col gap-3 rounded-md px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium">Crossfade</p>
-            <p className="text-xs text-muted">{crossfade}s overlap between tracks</p>
-          </div>
-          <Slider
-            className="w-full max-w-xs"
-            min={0}
-            max={12}
-            step={1}
-            value={[crossfade]}
-            onValueChange={(v) => setCrossfade(v[0] ?? 0)}
-          />
+          <div><p className="text-sm font-medium">Crossfade</p><p className="text-xs text-muted">{crossfade}s overlap between tracks</p></div>
+          <Slider className="w-full max-w-xs" min={0} max={12} step={1} value={[crossfade]} onValueChange={(v) => setCrossfade(v[0] ?? 0)} />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-3">
-          <div>
-            <p className="text-sm font-medium">Sleep timer</p>
-            <p className="text-xs text-muted">{remaining ? `Stops in ${remaining}` : "Off"}</p>
-          </div>
+          <div><p className="text-sm font-medium">Sleep timer</p><p className="text-xs text-muted">{remaining ? `Stops in ${remaining}` : "Off"}</p></div>
           <div className="flex flex-wrap gap-2">
-            {[15, 30, 45, 60].map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setSleep(m)}
-                className="inline-flex h-9 items-center gap-1 rounded-full bg-chip px-3 text-xs hover:bg-hover"
-              >
-                <Timer className="size-3.5" /> {m}m
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setSleep(null)}
-              className="inline-flex h-9 items-center rounded-full bg-chip px-3 text-xs hover:bg-hover"
-            >
-              Off
-            </button>
+            {[15, 30, 45, 60].map((m) => <button key={m} type="button" onClick={() => setSleep(m)} className="inline-flex h-9 items-center gap-1 rounded-full bg-chip px-3 text-xs hover:bg-hover"><Timer className="size-3.5" /> {m}m</button>)}
+            <button type="button" onClick={() => setSleep(null)} className="inline-flex h-9 items-center rounded-full bg-chip px-3 text-xs hover:bg-hover">Off</button>
           </div>
         </div>
       </section>
 
-      <p className="text-xs text-subtle">
-        Pulse searches a worldwide catalog and plays official 30-second previews so every artist is
-        reachable. Full-length licensed streams aren't included in this web app.
-      </p>
+      <section className="rounded-lg bg-surface p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div><p className="font-display text-base font-semibold">Full-track playback</p><p className="mt-1 text-sm text-muted">Connect your own Spotify Premium account. Pulse uses Spotify's official Web Playback SDK and keeps your account credentials out of the app.</p></div>
+          <button type="button" disabled={!isSpotifyConfigured()} onClick={() => void handleSpotify()} className="inline-flex h-10 shrink-0 items-center justify-center rounded-full bg-foreground px-4 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-40">{spotifyConnected ? "Disconnect Spotify" : "Connect Spotify"}</button>
+        </div>
+        {!isSpotifyConfigured() && <p className="mt-3 text-xs text-subtle">Set VITE_SPOTIFY_CLIENT_ID in your local environment and add the exact <code>/premium</code> redirect URI in your Spotify Developer app.</p>}
+        {spotifyError && <p className="mt-3 text-xs text-destructive">{spotifyError}</p>}
+        {spotifyConnected && <p className="mt-3 text-xs text-subtle">Spotify is connected. Full-track provider routing is ready; catalog tracks will use their authorized provider source when one is attached.</p>}
+      </section>
+
+      <p className="text-xs text-subtle">Pulse searches a worldwide catalog and currently uses official 30-second previews for Deezer catalog results. Full-length playback is only enabled through an authorized provider such as your connected Spotify Premium account.</p>
     </Page>
   );
 }
 
 function Perk({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
-  return (
-    <div className="rounded-lg bg-surface p-4">
-      <div className="mb-3 inline-flex size-10 items-center justify-center rounded-md bg-chip">
-        {icon}
-      </div>
-      <h2 className="font-display text-base font-semibold">{title}</h2>
-      <p className="mt-1 text-sm text-muted">{body}</p>
-    </div>
-  );
+  return <div className="rounded-lg bg-surface p-4"><div className="mb-3 inline-flex size-10 items-center justify-center rounded-md bg-chip">{icon}</div><h2 className="font-display text-base font-semibold">{title}</h2><p className="mt-1 text-sm text-muted">{body}</p></div>;
 }
 
-function Row({
-  title,
-  hint,
-  checked,
-  onCheckedChange,
-}: {
-  title: string;
-  hint: string;
-  checked: boolean;
-  onCheckedChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-4 rounded-md px-3 py-3">
-      <span>
-        <span className="block text-sm font-medium">{title}</span>
-        <span className="block text-xs text-muted">{hint}</span>
-      </span>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
-    </label>
-  );
+function Row({ title, hint, checked, onCheckedChange }: { title: string; hint: string; checked: boolean; onCheckedChange: (v: boolean) => void }) {
+  return <label className="flex items-center justify-between gap-4 rounded-md px-3 py-3"><span><span className="block text-sm font-medium">{title}</span><span className="block text-xs text-muted">{hint}</span></span><Switch checked={checked} onCheckedChange={onCheckedChange} /></label>;
 }
