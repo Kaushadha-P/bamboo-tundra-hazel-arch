@@ -1,0 +1,65 @@
+//#region node_modules/.nitro/vite/services/ssr/assets/types-DcHz4eEY.js
+var MOODS = [
+	{
+		id: "workout",
+		title: "Workout",
+		query: "workout hits"
+	},
+	{
+		id: "relax",
+		title: "Relax",
+		query: "chill acoustic"
+	},
+	{
+		id: "focus",
+		title: "Focus",
+		query: "lofi beats"
+	},
+	{
+		id: "party",
+		title: "Party",
+		query: "party anthems"
+	},
+	{
+		id: "romance",
+		title: "Romance",
+		query: "love songs"
+	},
+	{
+		id: "sleep",
+		title: "Sleep",
+		query: "sleep piano ambient"
+	},
+	{
+		id: "sad",
+		title: "Sad",
+		query: "sad songs"
+	},
+	{
+		id: "energy",
+		title: "Energy",
+		query: "edm bangers"
+	},
+	{
+		id: "commute",
+		title: "Commute",
+		query: "pop hits"
+	},
+	{
+		id: "feel-good",
+		title: "Feel good",
+		query: "feel good"
+	},
+	{
+		id: "throwback",
+		title: "Throwback",
+		query: "2000s hits"
+	},
+	{
+		id: "latin",
+		title: "Latin",
+		query: "reggaeton latin"
+	}
+];
+//#endregion
+export { MOODS as t };

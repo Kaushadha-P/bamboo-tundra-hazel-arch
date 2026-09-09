@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Pulse",
+      "hasCanvas": false,
+      "bodyTextLen": 5267,
+      "bodyTextHash": "3f8c6cfb0e989c6b0b27b8d3bdeff26abab5c5dc73740f326e99194b59c0bc3e",
+      "bodyTextPrefix": "Pulse Home Explore Library Premium New playlist Liked music Down",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Pulse",
+      "hasCanvas": false,
+      "bodyTextLen": 5184,
+      "bodyTextHash": "a1693424202b66e7045ac8f94c67a4a20500acb854086ca26099192a64e1957a",
+      "bodyTextPrefix": "Pulse PULSE PREMIUM Good afternoon Play charts START RADIO FROM ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
