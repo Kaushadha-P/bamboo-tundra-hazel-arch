@@ -1,3 +1,5 @@
+export type PlaybackSource = "deezer-preview" | "authorized-url" | "spotify";
+
 export type Track = {
   id: string;
   title: string;
@@ -6,7 +8,11 @@ export type Track = {
   album: string;
   albumId: string;
   duration: number;
+  /** Short catalog preview URL. Kept for discovery/fallback playback. */
   previewUrl: string;
+  /** Full-track URL supplied by an authorized provider. Never inferred from a catalog URL. */
+  playbackUrl?: string;
+  playbackSource?: PlaybackSource;
   cover: string;
   coverLg: string;
   explicit: boolean;
