@@ -1,4 +1,4 @@
-export type PlaybackSource = "deezer-preview" | "authorized-url" | "spotify";
+export type PlaybackSource = "youtube-embed" | "deezer-preview" | "authorized-url";
 
 export type Track = {
   id: string;
