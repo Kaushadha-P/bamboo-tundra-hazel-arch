@@ -12,6 +12,7 @@ export function AudioEngine() {
   const seekLock = useRef(false);
   const wasPlayingBeforeHidden = useRef(false);
   const spotifyActive = useRef(false);
+  const spotifyStateSync = useRef(false);
 
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
@@ -34,15 +35,11 @@ export function AudioEngine() {
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !track) return;
-
     const load = async () => {
       if (lastId.current === track.id && (audio.src || spotifyActive.current)) return;
       lastId.current = track.id;
       spotifyActive.current = false;
       if (!incognito) addRecent(track);
-
-      // If the user connected Spotify Premium, resolve the catalog result to the
-      // official Spotify recording and let Spotify's protected player handle it.
       if (isSpotifyConnected()) {
         try {
           const match = await searchSpotifyTrack(track.title, track.artist);
@@ -50,10 +47,12 @@ export function AudioEngine() {
             spotifyActive.current = true;
             await playSpotifyUri(match.uri, (state) => {
               if (!state) return;
+              spotifyStateSync.current = true;
               const duration = Number(state.duration ?? 0) / 1000;
               const position = Number(state.position ?? 0) / 1000;
               if (duration > 0) setProgress(position, duration);
               setPlaying(!state.paused);
+              window.setTimeout(() => { spotifyStateSync.current = false; }, 0);
             });
             return;
           }
@@ -61,12 +60,9 @@ export function AudioEngine() {
           spotifyActive.current = false;
         }
       }
-
       audio.src = getPlaybackUrl(track);
       audio.load();
-      if (playing) {
-        try { await audio.play(); } catch { setPlaying(false); }
-      }
+      if (playing) { try { await audio.play(); } catch { setPlaying(false); } }
     };
     void load();
   }, [track, addRecent, incognito, playing, setPlaying, setProgress]);
@@ -75,7 +71,7 @@ export function AudioEngine() {
     const audio = audioRef.current;
     if (!audio) return;
     if (spotifyActive.current) {
-      void spotifySetPaused(!playing).catch(() => setPlaying(false));
+      if (!spotifyStateSync.current) void spotifySetPaused(!playing).catch(() => setPlaying(false));
       return;
     }
     if (!track) { audio.pause(); return; }
@@ -84,16 +80,13 @@ export function AudioEngine() {
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (spotifyActive.current) {
-      void spotifySetVolume(muted ? 0 : volume).catch(() => undefined);
-      return;
-    }
+    if (spotifyActive.current) { void spotifySetVolume(muted ? 0 : volume).catch(() => undefined); return; }
     if (audio) audio.volume = muted ? 0 : volume;
   }, [volume, muted]);
 
   useEffect(() => {
     if (spotifyActive.current) {
-      void spotifySeek(progress * 1000).catch(() => undefined);
+      if (!spotifyStateSync.current) void spotifySeek(progress * 1000).catch(() => undefined);
       return;
     }
     const audio = audioRef.current;
@@ -110,9 +103,7 @@ export function AudioEngine() {
       if (document.visibilityState === "hidden") {
         wasPlayingBeforeHidden.current = !audio.paused;
         if (!backgroundPlay) { audio.pause(); setPlaying(false); }
-      } else if (backgroundPlay && wasPlayingBeforeHidden.current && playing) {
-        void audio.play().catch(() => setPlaying(false));
-      }
+      } else if (backgroundPlay && wasPlayingBeforeHidden.current && playing) void audio.play().catch(() => setPlaying(false));
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -132,16 +123,13 @@ export function AudioEngine() {
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
     const audio = audioRef.current;
     const updatePositionState = () => {
-      const duration = audio?.duration ?? usePlayer.getState().duration;
+      const duration = spotifyActive.current ? usePlayer.getState().duration : (audio?.duration ?? usePlayer.getState().duration);
       const position = spotifyActive.current ? usePlayer.getState().progress : (audio?.currentTime ?? progress);
-      if (Number.isFinite(duration) && duration > 0 && Number.isFinite(position) && position >= 0 && position <= duration) {
-        try { navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position }); } catch { /* unsupported */ }
-      }
+      if (Number.isFinite(duration) && duration > 0 && Number.isFinite(position) && position >= 0 && position <= duration) { try { navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position }); } catch { /* unsupported */ } }
     };
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ["play", () => setPlaying(true)], ["pause", () => setPlaying(false)], ["previoustrack", prev], ["nexttrack", next], ["stop", () => setPlaying(false)],
-      ["seekbackward", (details) => seek(Math.max(0, progress - (details.seekOffset || 10)))],
-      ["seekforward", (details) => seek(progress + (details.seekOffset || 10))],
+      ["seekbackward", (details) => seek(Math.max(0, progress - (details.seekOffset || 10)))], ["seekforward", (details) => seek(progress + (details.seekOffset || 10))],
       ["seekto", (details) => { if (details.seekTime != null) seek(details.seekTime); }],
     ];
     for (const [action, fn] of handlers) { try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* unsupported */ } }
@@ -155,12 +143,9 @@ export function AudioEngine() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
-      if (e.code === "Space") { e.preventDefault(); toggle(); }
-      else if (e.code === "ArrowRight") seek(usePlayer.getState().progress + 5);
-      else if (e.code === "ArrowLeft") seek(Math.max(0, usePlayer.getState().progress - 5));
-      else if (e.key === "n" || e.key === "N") next(); else if (e.key === "p" || e.key === "P") prev();
-      else if (e.key === "m" || e.key === "M") usePlayer.getState().toggleMute(); else if (e.key === "s" || e.key === "S") usePlayer.getState().toggleShuffle();
-      else if (e.key === "r" || e.key === "R") usePlayer.getState().cycleRepeat(); else if (e.key === "f" || e.key === "F") usePlayer.getState().setFullOpen(!usePlayer.getState().fullOpen);
+      if (e.code === "Space") { e.preventDefault(); toggle(); } else if (e.code === "ArrowRight") seek(usePlayer.getState().progress + 5); else if (e.code === "ArrowLeft") seek(Math.max(0, usePlayer.getState().progress - 5));
+      else if (e.key === "n" || e.key === "N") next(); else if (e.key === "p" || e.key === "P") prev(); else if (e.key === "m" || e.key === "M") usePlayer.getState().toggleMute();
+      else if (e.key === "s" || e.key === "S") usePlayer.getState().toggleShuffle(); else if (e.key === "r" || e.key === "R") usePlayer.getState().cycleRepeat(); else if (e.key === "f" || e.key === "F") usePlayer.getState().setFullOpen(!usePlayer.getState().fullOpen);
       else if (e.key === "]") usePlayer.getState().setVolume(Math.min(1, usePlayer.getState().volume + 0.05)); else if (e.key === "[") usePlayer.getState().setVolume(Math.max(0, usePlayer.getState().volume - 0.05));
     };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
@@ -175,7 +160,6 @@ export function AudioEngine() {
   const onTime = () => { const audio = audioRef.current; if (!audio || spotifyActive.current) return; seekLock.current = true; setProgress(audio.currentTime, Number.isFinite(audio.duration) ? audio.duration : 30); syncMediaPosition(); window.setTimeout(() => { seekLock.current = false; }, 50); };
   const onMetadata = () => { const audio = audioRef.current; if (!audio || spotifyActive.current) return; if (Number.isFinite(audio.duration) && audio.duration > 0) { setProgress(audio.currentTime, audio.duration); syncMediaPosition(); } };
   const onEnded = () => next();
-
   const onError = async () => {
     if (!track) return;
     try {
