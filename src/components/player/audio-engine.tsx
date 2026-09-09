@@ -7,6 +7,7 @@ export function AudioEngine() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastId = useRef<string | null>(null);
   const seekLock = useRef(false);
+  const wasPlayingBeforeHidden = useRef(false);
 
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
@@ -73,12 +74,33 @@ export function AudioEngine() {
     if (!audio || seekLock.current) return;
     if (Math.abs(audio.currentTime - progress) > 1.2) {
       try {
-        audio.currentTime = progress;
+        audio.currentTime = Math.min(Math.max(0, progress), Number.isFinite(audio.duration) ? audio.duration : progress);
       } catch {
         /* ignore */
       }
     }
   }, [progress]);
+
+  // Respect the user's background-play setting. When enabled, the native audio
+  // element continues playing while the page is hidden; supported browsers can
+  // keep Media Session controls active on the lock screen/headset controls.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (document.visibilityState === "hidden") {
+        wasPlayingBeforeHidden.current = !audio.paused;
+        if (!backgroundPlay) {
+          audio.pause();
+          setPlaying(false);
+        }
+      } else if (backgroundPlay && wasPlayingBeforeHidden.current && playing) {
+        void audio.play().catch(() => setPlaying(false));
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [backgroundPlay, playing, setPlaying]);
 
   useEffect(() => {
     if (!sleepUntil) return;
@@ -174,8 +196,8 @@ export function AudioEngine() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable)
-        return;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+
       if (e.code === "Space") {
         e.preventDefault();
         toggle();
@@ -189,36 +211,64 @@ export function AudioEngine() {
         prev();
       } else if (e.key === "m" || e.key === "M") {
         usePlayer.getState().toggleMute();
+      } else if (e.key === "s" || e.key === "S") {
+        usePlayer.getState().toggleShuffle();
+      } else if (e.key === "r" || e.key === "R") {
+        usePlayer.getState().cycleRepeat();
       } else if (e.key === "f" || e.key === "F") {
         usePlayer.getState().setFullOpen(!usePlayer.getState().fullOpen);
+      } else if (e.key === "]") {
+        usePlayer.getState().setVolume(Math.min(1, usePlayer.getState().volume + 0.05));
+      } else if (e.key === "[") {
+        usePlayer.getState().setVolume(Math.max(0, usePlayer.getState().volume - 0.05));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [toggle, next, prev, seek]);
 
+  const syncMediaPosition = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const duration = audio.duration;
+    const position = audio.currentTime;
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.mediaSession &&
+      Number.isFinite(duration) &&
+      duration > 0 &&
+      Number.isFinite(position)
+    ) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: audio.playbackRate || 1,
+          position: Math.min(Math.max(0, position), duration),
+        });
+      } catch {
+        /* unsupported */
+      }
+    }
+  };
+
   const onTime = () => {
     const audio = audioRef.current;
     if (!audio) return;
     seekLock.current = true;
     setProgress(audio.currentTime, Number.isFinite(audio.duration) ? audio.duration : 30);
-    if (typeof navigator !== "undefined" && navigator.mediaSession) {
-      try {
-        const duration = audio.duration;
-        if (Number.isFinite(duration) && duration > 0) {
-          navigator.mediaSession.setPositionState({
-            duration,
-            playbackRate: audio.playbackRate || 1,
-            position: Math.min(audio.currentTime, duration),
-          });
-        }
-      } catch {
-        /* unsupported */
-      }
-    }
+    syncMediaPosition();
     window.setTimeout(() => {
       seekLock.current = false;
     }, 50);
+  };
+
+  const onMetadata = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+      setProgress(audio.currentTime, audio.duration);
+      syncMediaPosition();
+    }
   };
 
   const onEnded = () => {
@@ -247,6 +297,8 @@ export function AudioEngine() {
       ref={audioRef}
       preload="auto"
       playsInline
+      onLoadedMetadata={onMetadata}
+      onDurationChange={onMetadata}
       onTimeUpdate={onTime}
       onEnded={onEnded}
       onError={() => void onError()}
