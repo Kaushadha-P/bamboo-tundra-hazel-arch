@@ -103,6 +103,7 @@ export function mapTrack(t: DzTrack): Track | null {
     albumId: String(t.album?.id ?? ""),
     duration: t.duration ?? 30,
     previewUrl,
+    playbackSource: "deezer-preview",
     cover,
     coverLg: coverLg || cover,
     explicit: Boolean(t.explicit_lyrics),
@@ -149,16 +150,14 @@ function mapRadio(r: DzRadio): RadioStation {
   return {
     id: String(r.id),
     title: r.title || "Radio",
-    picture: r.picture_medium || "",
+    picture: r.picture_medium || r.picture_xl || "",
     pictureLg: r.picture_xl || r.picture_medium || "",
   };
 }
 
 async function dz<T>(path: string): Promise<T> {
   const url = path.startsWith("http") ? path : `https://api.deezer.com${path}`;
-  const res = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`Catalog request failed (${res.status})`);
   return (await res.json()) as T;
 }
@@ -177,52 +176,26 @@ function tracksOf(data: { data?: DzTrack[] } | DzTrack[] | undefined): Track[] {
 }
 
 export const getHomeFeed = createServerFn({ method: "GET" }).handler(
-  async (): Promise<HomeFeed> => {
-    return cached("home-v2", TTL, async () => {
+  async (): Promise<HomeFeed> =>
+    cached("home-v2", TTL, async () => {
       const [chart, radios, genres] = await Promise.all([
-        dz<{
-          tracks?: { data?: DzTrack[] };
-          albums?: { data?: DzAlbum[] };
-          artists?: { data?: DzArtist[] };
-          playlists?: { data?: DzPlaylist[] };
-        }>("/chart/0"),
+        dz<{ tracks?: { data?: DzTrack[] }; albums?: { data?: DzAlbum[] }; artists?: { data?: DzArtist[] }; playlists?: { data?: DzPlaylist[] } }>("/chart/0"),
         dz<{ data?: DzRadio[] }>("/radio"),
         dz<{ data?: DzGenre[] }>("/genre"),
       ]);
-
-      const stations = (radios.data ?? []).filter(
-        (r) => r.title && !/test/i.test(r.title || ""),
-      );
+      const stations = (radios.data ?? []).filter((r) => r.title && !/test/i.test(r.title || ""));
       const mixStations = stations.slice(0, 6);
-      const mixRaw = await Promise.all(
-        mixStations.map((r) =>
-          dz<{ data?: DzTrack[] }>(`/radio/${r.id}/tracks?limit=16`),
-        ),
-      );
-
+      const mixRaw = await Promise.all(mixStations.map((r) => dz<{ data?: DzTrack[] }>(`/radio/${r.id}/tracks?limit=16`)));
       return {
         charts: tracksOf(chart.tracks),
         albums: (chart.albums?.data ?? []).map(mapAlbum),
         artists: (chart.artists?.data ?? []).map(mapArtist),
         playlists: (chart.playlists?.data ?? []).map(mapPlaylist),
         radios: stations.slice(0, 24).map(mapRadio),
-        genres: (genres.data ?? [])
-          .filter((g) => g.id !== 0 && g.name)
-          .slice(0, 24)
-          .map((g) => ({
-            id: String(g.id),
-            name: g.name || "Genre",
-            picture: g.picture_medium || "",
-          })),
-        mixes: mixRaw.map((raw, i) => ({
-          id: String(mixStations[i]!.id),
-          title: `${mixStations[i]!.title} mix`,
-          subtitle: "Made for you",
-          tracks: tracksOf(raw),
-        })),
+        genres: (genres.data ?? []).filter((g) => g.id !== 0 && g.name).slice(0, 24).map((g) => ({ id: String(g.id), name: g.name || "Genre", picture: g.picture_medium || "" })),
+        mixes: mixRaw.map((raw, i) => ({ id: String(mixStations[i]!.id), title: `${mixStations[i]!.title} mix`, subtitle: "Made for you", tracks: tracksOf(raw) })),
       };
-    });
-  },
+    }),
 );
 
 export const searchCatalog = createServerFn({ method: "GET" })
@@ -230,8 +203,7 @@ export const searchCatalog = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<SearchResults> => {
     const q = data.q;
     if (!q) return { tracks: [], albums: [], artists: [], playlists: [] };
-    const key = `search:${q.toLowerCase()}`;
-    return cached(key, 5 * 60 * 1000, async () => {
+    return cached(`search:${q.toLowerCase()}`, 5 * 60 * 1000, async () => {
       const enc = encodeURIComponent(q);
       const [tracks, albums, artists, playlists] = await Promise.all([
         dz<{ data?: DzTrack[] }>(`/search?q=${enc}&limit=40`),
@@ -239,145 +211,63 @@ export const searchCatalog = createServerFn({ method: "GET" })
         dz<{ data?: DzArtist[] }>(`/search/artist?q=${enc}&limit=16`),
         dz<{ data?: DzPlaylist[] }>(`/search/playlist?q=${enc}&limit=16`),
       ]);
-      return {
-        tracks: tracksOf(tracks),
-        albums: (albums.data ?? []).map(mapAlbum),
-        artists: (artists.data ?? []).map(mapArtist),
-        playlists: (playlists.data ?? []).map(mapPlaylist),
-      };
+      return { tracks: tracksOf(tracks), albums: (albums.data ?? []).map(mapAlbum), artists: (artists.data ?? []).map(mapArtist), playlists: (playlists.data ?? []).map(mapPlaylist) };
     });
   });
 
 export const getTrack = createServerFn({ method: "GET" })
   .validator((d: { id: string }) => ({ id: String(d.id) }))
-  .handler(async ({ data }): Promise<Track | null> => {
-    const raw = await dz<DzTrack>(`/track/${encodeURIComponent(data.id)}`);
-    return mapTrack(raw);
-  });
+  .handler(async ({ data }): Promise<Track | null> => mapTrack(await dz<DzTrack>(`/track/${encodeURIComponent(data.id)}`)));
 
-export const getAlbum = createServerFn({ method: "GET" })
-  .validator((d: { id: string }) => ({ id: String(d.id) }))
-  .handler(async ({ data }) => {
-    return cached(`album:${data.id}`, TTL, async () => {
-      const raw = await dz<DzAlbum>(`/album/${encodeURIComponent(data.id)}`);
-      return {
-        album: mapAlbum(raw),
-        tracks: tracksOf(raw.tracks),
-      };
-    });
-  });
+export const getAlbum = createServerFn({ method: "GET" }).validator((d: { id: string }) => ({ id: String(d.id) })).handler(async ({ data }) => cached(`album:${data.id}`, TTL, async () => {
+  const raw = await dz<DzAlbum>(`/album/${encodeURIComponent(data.id)}`);
+  return { album: mapAlbum(raw), tracks: tracksOf(raw.tracks) };
+}));
 
-export const getArtist = createServerFn({ method: "GET" })
-  .validator((d: { id: string }) => ({ id: String(d.id) }))
-  .handler(async ({ data }) => {
-    return cached(`artist:${data.id}`, TTL, async () => {
-      const id = encodeURIComponent(data.id);
-      const [artist, top, albums, related, radio] = await Promise.all([
-        dz<DzArtist>(`/artist/${id}`),
-        dz<{ data?: DzTrack[] }>(`/artist/${id}/top?limit=25`),
-        dz<{ data?: DzAlbum[] }>(`/artist/${id}/albums?limit=24`),
-        dz<{ data?: DzArtist[] }>(`/artist/${id}/related?limit=12`),
-        dz<{ data?: DzTrack[] }>(`/artist/${id}/radio`),
-      ]);
-      return {
-        artist: mapArtist(artist),
-        top: tracksOf(top),
-        albums: (albums.data ?? []).map(mapAlbum),
-        related: (related.data ?? []).map(mapArtist),
-        radio: tracksOf(radio),
-      };
-    });
-  });
+export const getArtist = createServerFn({ method: "GET" }).validator((d: { id: string }) => ({ id: String(d.id) })).handler(async ({ data }) => cached(`artist:${data.id}`, TTL, async () => {
+  const id = encodeURIComponent(data.id);
+  const [artist, top, albums, related, radio] = await Promise.all([
+    dz<DzArtist>(`/artist/${id}`), dz<{ data?: DzTrack[] }>(`/artist/${id}/top?limit=25`),
+    dz<{ data?: DzAlbum[] }>(`/artist/${id}/albums?limit=24`), dz<{ data?: DzArtist[] }>(`/artist/${id}/related?limit=12`),
+    dz<{ data?: DzTrack[] }>(`/artist/${id}/radio`),
+  ]);
+  return { artist: mapArtist(artist), top: tracksOf(top), albums: (albums.data ?? []).map(mapAlbum), related: (related.data ?? []).map(mapArtist), radio: tracksOf(radio) };
+}));
 
-export const getPlaylist = createServerFn({ method: "GET" })
-  .validator((d: { id: string }) => ({ id: String(d.id) }))
-  .handler(async ({ data }) => {
-    return cached(`playlist:${data.id}`, TTL, async () => {
-      const raw = await dz<DzPlaylist>(`/playlist/${encodeURIComponent(data.id)}`);
-      return {
-        playlist: mapPlaylist(raw),
-        tracks: tracksOf(raw.tracks),
-      };
-    });
-  });
+export const getPlaylist = createServerFn({ method: "GET" }).validator((d: { id: string }) => ({ id: String(d.id) })).handler(async ({ data }) => cached(`playlist:${data.id}`, TTL, async () => {
+  const raw = await dz<DzPlaylist>(`/playlist/${encodeURIComponent(data.id)}`);
+  return { playlist: mapPlaylist(raw), tracks: tracksOf(raw.tracks) };
+}));
 
-export const getRadio = createServerFn({ method: "GET" })
-  .validator((d: { id: string }) => ({ id: String(d.id) }))
-  .handler(async ({ data }) => {
-    return cached(`radio:${data.id}`, 4 * 60 * 1000, async () => {
-      const [info, tracks] = await Promise.all([
-        dz<DzRadio>(`/radio/${encodeURIComponent(data.id)}`),
-        dz<{ data?: DzTrack[] }>(`/radio/${encodeURIComponent(data.id)}/tracks?limit=40`),
-      ]);
-      return { radio: mapRadio(info), tracks: tracksOf(tracks) };
-    });
-  });
+export const getRadio = createServerFn({ method: "GET" }).validator((d: { id: string }) => ({ id: String(d.id) })).handler(async ({ data }) => cached(`radio:${data.id}`, 4 * 60 * 1000, async () => {
+  const [info, tracks] = await Promise.all([dz<DzRadio>(`/radio/${encodeURIComponent(data.id)}`), dz<{ data?: DzTrack[] }>(`/radio/${encodeURIComponent(data.id)}/tracks?limit=40`)]);
+  return { radio: mapRadio(info), tracks: tracksOf(tracks) };
+}));
 
-export const getGenre = createServerFn({ method: "GET" })
-  .validator((d: { id: string }) => ({ id: String(d.id) }))
-  .handler(async ({ data }) => {
-    return cached(`genre:${data.id}`, TTL, async () => {
-      const id = encodeURIComponent(data.id);
-      const [info, artists] = await Promise.all([
-        dz<DzGenre>(`/genre/${id}`),
-        dz<{ data?: DzArtist[] }>(`/genre/${id}/artists?limit=24`),
-      ]);
-      const first = artists.data?.[0];
-      let tracks: Track[] = [];
-      if (first) {
-        const top = await dz<{ data?: DzTrack[] }>(`/artist/${first.id}/top?limit=30`);
-        tracks = tracksOf(top);
-      }
-      return {
-        genre: { id: String(info.id), name: info.name || "Genre", picture: info.picture_medium || "" },
-        artists: (artists.data ?? []).map(mapArtist),
-        tracks,
-      };
-    });
-  });
+export const getGenre = createServerFn({ method: "GET" }).validator((d: { id: string }) => ({ id: String(d.id) })).handler(async ({ data }) => cached(`genre:${data.id}`, TTL, async () => {
+  const id = encodeURIComponent(data.id);
+  const [info, artists] = await Promise.all([dz<DzGenre>(`/genre/${id}`), dz<{ data?: DzArtist[] }>(`/genre/${id}/artists?limit=24`)]);
+  const first = artists.data?.[0];
+  let tracks: Track[] = [];
+  if (first) tracks = tracksOf(await dz<{ data?: DzTrack[] }>(`/artist/${first.id}/top?limit=30`));
+  return { genre: { id: String(info.id), name: info.name || "Genre", picture: info.picture_medium || "" }, artists: (artists.data ?? []).map(mapArtist), tracks };
+}));
 
-export const searchMood = createServerFn({ method: "GET" })
-  .validator((d: { query: string }) => ({ query: String(d.query ?? "").slice(0, 80) }))
-  .handler(async ({ data }) => {
-    const key = `mood:${data.query.toLowerCase()}`;
-    return cached(key, TTL, async () => {
-      const raw = await dz<{ data?: DzTrack[] }>(
-        `/search?q=${encodeURIComponent(data.query)}&limit=40`,
-      );
-      return tracksOf(raw);
-    });
-  });
+export const searchMood = createServerFn({ method: "GET" }).validator((d: { query: string }) => ({ query: String(d.query ?? "").slice(0, 80) })).handler(async ({ data }) => cached(`mood:${data.query.toLowerCase()}`, TTL, async () => tracksOf(await dz<{ data?: DzTrack[] }>(`/search?q=${encodeURIComponent(data.query)}&limit=40`))));
 
-export const getLyrics = createServerFn({ method: "GET" })
-  .validator((d: { artist: string; title: string; duration?: number }) => ({
-    artist: String(d.artist ?? "").slice(0, 120),
-    title: String(d.title ?? "").slice(0, 120),
-    duration: typeof d.duration === "number" ? d.duration : undefined,
-  }))
-  .handler(async ({ data }): Promise<Lyrics> => {
-    const params = new URLSearchParams({
-      artist_name: data.artist,
-      track_name: data.title,
-    });
-    if (data.duration) params.set("duration", String(Math.round(data.duration)));
-    try {
-      const res = await fetch(`https://lrclib.net/api/get?${params.toString()}`, {
-        headers: { "User-Agent": "Pulse/1.0 (music-app)" },
-      });
-      if (!res.ok) return { synced: null, plain: null };
-      const json = (await res.json()) as {
-        syncedLyrics?: string | null;
-        plainLyrics?: string | null;
-      };
-      const synced = parseLrc(json.syncedLyrics ?? "");
-      return {
-        synced: synced.length ? synced : null,
-        plain: json.plainLyrics || null,
-      };
-    } catch {
-      return { synced: null, plain: null };
-    }
-  });
+export const getLyrics = createServerFn({ method: "GET" }).validator((d: { artist: string; title: string; duration?: number }) => ({ artist: String(d.artist ?? "").slice(0, 120), title: String(d.title ?? "").slice(0, 120), duration: typeof d.duration === "number" ? d.duration : undefined })).handler(async ({ data }): Promise<Lyrics> => {
+  const params = new URLSearchParams({ artist_name: data.artist, track_name: data.title });
+  if (data.duration) params.set("duration", String(Math.round(data.duration)));
+  try {
+    const res = await fetch(`https://lrclib.net/api/get?${params.toString()}`, { headers: { "User-Agent": "Pulse/1.0 (music-app)" } });
+    if (!res.ok) return { synced: null, plain: null };
+    const json = (await res.json()) as { syncedLyrics?: string | null; plainLyrics?: string | null };
+    const synced = parseLrc(json.syncedLyrics ?? "");
+    return { synced: synced.length ? synced : null, plain: json.plainLyrics || null };
+  } catch {
+    return { synced: null, plain: null };
+  }
+});
 
 function parseLrc(raw: string): { time: number; text: string }[] {
   if (!raw) return [];
@@ -387,8 +277,7 @@ function parseLrc(raw: string): { time: number; text: string }[] {
     if (!m) continue;
     const time = Number(m[1]) * 60 + Number(m[2]);
     const text = (m[3] ?? "").trim();
-    if (!text) continue;
-    out.push({ time, text });
+    if (text) out.push({ time, text });
   }
   return out;
 }
