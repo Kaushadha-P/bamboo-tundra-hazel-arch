@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { getTrack } from "@/lib/music/api";
 import { useLibrary } from "@/lib/music/library-store";
 import { usePlayer } from "@/lib/music/player-store";
@@ -10,11 +10,11 @@ export function AudioEngine() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const youtubeRef = useRef<HTMLDivElement>(null);
   const lastId = useRef<string | null>(null);
+  const loadRequest = useRef(0);
   const seekLock = useRef(false);
   const wasPlayingBeforeHidden = useRef(false);
   const youtubeActive = useRef(false);
   const youtubeStateSync = useRef(false);
-  const [youtubeVisible, setYoutubeVisible] = useState(false);
 
   const queue = usePlayer((s) => s.queue);
   const index = usePlayer((s) => s.index);
@@ -38,20 +38,22 @@ export function AudioEngine() {
     const audio = audioRef.current;
     const ytHost = youtubeRef.current;
     if (!track || !audio || !ytHost) return;
+
+    const requestId = ++loadRequest.current;
     const load = async () => {
       if (lastId.current === track.id && (audio.src || youtubeActive.current)) return;
       lastId.current = track.id;
       youtubeActive.current = false;
       audio.pause();
-      setYoutubeVisible(false);
       if (!incognito) addRecent(track);
 
       if (isYouTubeConfigured()) {
         try {
           const match = await searchYouTubeTrack(track.title, track.artist);
+          if (requestId !== loadRequest.current) return;
+
           if (match) {
             youtubeActive.current = true;
-            setYoutubeVisible(true);
             await playYouTubeVideo(ytHost, match.videoId, (state) => {
               const YT = window.YT;
               if (!YT) return;
@@ -61,13 +63,21 @@ export function AudioEngine() {
               if (state === YT.PlayerState.ENDED) next();
               window.setTimeout(() => { youtubeStateSync.current = false; }, 0);
             });
+            if (requestId !== loadRequest.current) return;
             youtubeSetVolume(muted ? 0 : volume);
             if (playing) youtubePlay();
             return;
           }
+
+          // When YouTube is configured, do not silently fall back to a 30-second
+          // Deezer preview. A preview makes a full-track failure look like playback worked.
+          setPlaying(false);
+          return;
         } catch {
+          if (requestId !== loadRequest.current) return;
           youtubeActive.current = false;
-          setYoutubeVisible(false);
+          setPlaying(false);
+          return;
         }
       }
 
@@ -76,7 +86,7 @@ export function AudioEngine() {
       if (playing) { try { await audio.play(); } catch { setPlaying(false); } }
     };
     void load();
-  }, [track, addRecent, incognito, playing, setPlaying, next, muted, volume]);
+  }, [track, addRecent, incognito, setPlaying, next]);
 
   useEffect(() => {
     if (!track) return;
@@ -194,7 +204,7 @@ export function AudioEngine() {
   return (
     <>
       <audio ref={audioRef} preload="auto" playsInline onLoadedMetadata={onMetadata} onDurationChange={onMetadata} onTimeUpdate={onTime} onEnded={onEnded} onError={() => void onError()} onPlay={() => { if (backgroundPlay && !youtubeActive.current) setPlaying(true); if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "playing"; }} onPause={() => { if (typeof navigator !== "undefined" && navigator.mediaSession) navigator.mediaSession.playbackState = "paused"; }} />
-      <div ref={youtubeRef} aria-label="YouTube playback" className={youtubeVisible ? "fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" : "hidden"} />
+      <div ref={youtubeRef} aria-label="YouTube playback" className="fixed bottom-24 right-4 z-40 size-[200px] overflow-hidden rounded-md bg-black shadow-lg" />
     </>
   );
 }
