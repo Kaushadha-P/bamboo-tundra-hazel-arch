@@ -95,8 +95,11 @@ export function AudioEngine() {
     return () => window.clearTimeout(id);
   }, [sleepUntil, setPlaying]);
 
+  // Keep the browser/OS media session in sync so supported mobile browsers can
+  // expose lock-screen, headset and notification controls for the active track.
   useEffect(() => {
     if (!track || typeof navigator === "undefined" || !navigator.mediaSession) return;
+
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,
       artist: track.artist,
@@ -104,16 +107,46 @@ export function AudioEngine() {
       artwork: [
         { src: track.cover, sizes: "250x250", type: "image/jpeg" },
         { src: track.coverLg || track.cover, sizes: "512x512", type: "image/jpeg" },
-      ],
+      ].filter((item) => Boolean(item.src)),
     });
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
-    const handlers: [MediaSessionAction, () => void][] = [
+
+    const audio = audioRef.current;
+    const updatePositionState = () => {
+      const duration = audio?.duration ?? 0;
+      const position = audio?.currentTime ?? progress;
+      if (
+        Number.isFinite(duration) &&
+        duration > 0 &&
+        Number.isFinite(position) &&
+        position >= 0 &&
+        position <= duration
+      ) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration,
+            playbackRate: audio?.playbackRate || 1,
+            position,
+          });
+        } catch {
+          /* unsupported by this browser */
+        }
+      }
+    };
+
+    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ["play", () => setPlaying(true)],
       ["pause", () => setPlaying(false)],
       ["previoustrack", prev],
       ["nexttrack", next],
       ["stop", () => setPlaying(false)],
+      ["seekbackward", (details) => seek(Math.max(0, progress - (details.seekOffset || 10)))],
+      ["seekforward", (details) => seek(progress + (details.seekOffset || 10))],
+      ["seekto", (details) => {
+        if (details.seekTime != null) seek(details.seekTime);
+      }],
     ];
+
     for (const [action, fn] of handlers) {
       try {
         navigator.mediaSession.setActionHandler(action, fn);
@@ -121,6 +154,8 @@ export function AudioEngine() {
         /* unsupported */
       }
     }
+
+    updatePositionState();
     return () => {
       for (const [action] of handlers) {
         try {
@@ -130,7 +165,7 @@ export function AudioEngine() {
         }
       }
     };
-  }, [track, playing, next, prev, setPlaying]);
+  }, [track, playing, progress, next, prev, setPlaying, seek]);
 
   useEffect(() => {
     document.title = track ? `${track.title} · ${track.artist}` : "Pulse";
@@ -167,6 +202,20 @@ export function AudioEngine() {
     if (!audio) return;
     seekLock.current = true;
     setProgress(audio.currentTime, Number.isFinite(audio.duration) ? audio.duration : 30);
+    if (typeof navigator !== "undefined" && navigator.mediaSession) {
+      try {
+        const duration = audio.duration;
+        if (Number.isFinite(duration) && duration > 0) {
+          navigator.mediaSession.setPositionState({
+            duration,
+            playbackRate: audio.playbackRate || 1,
+            position: Math.min(audio.currentTime, duration),
+          });
+        }
+      } catch {
+        /* unsupported */
+      }
+    }
     window.setTimeout(() => {
       seekLock.current = false;
     }, 50);
@@ -203,11 +252,13 @@ export function AudioEngine() {
       onError={() => void onError()}
       onPlay={() => {
         if (backgroundPlay) setPlaying(true);
+        if (typeof navigator !== "undefined" && navigator.mediaSession) {
+          navigator.mediaSession.playbackState = "playing";
+        }
       }}
       onPause={() => {
-        const audio = audioRef.current;
-        if (audio && !audio.ended && playing && document.visibilityState === "visible") {
-          /* user-initiated pause handled via store */
+        if (typeof navigator !== "undefined" && navigator.mediaSession) {
+          navigator.mediaSession.playbackState = "paused";
         }
       }}
     />
